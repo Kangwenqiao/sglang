@@ -31,35 +31,24 @@ def handle_context_parallelism(server_args: Any):
 
     cfg = resolving_view(server_args)
     if parse_connector_type(cfg.model_path) != ConnectorType.INSTANCE:
-        from sglang.srt.configs.model_config import is_deepseek_dsa
-        from sglang.srt.layers.cp.utils import CP_V2_DEFAULT_MODEL_CLASSES
-
         model_config = model_config_of(server_args)
         hf_config = model_config.hf_config
         model_arch = hf_config.architectures[0]
-        if model_arch in CP_V2_DEFAULT_MODEL_CLASSES:
-            is_dsa_default_model = is_deepseek_dsa(hf_config)
-            # DSA CP-v2 currently supports only the interleave strategy.
-            enable_default_cp_v2 = not is_dsa_default_model or (
-                cfg.enable_prefill_cp and cfg.cp_strategy == "interleave"
-            )
-            if enable_default_cp_v2 and not envs.SGLANG_ENABLE_CP_V2.is_set():
-                envs.SGLANG_ENABLE_CP_V2.set(True)
-
-        if (
-            cfg.enable_prefill_cp
-            and model_arch in ("MiMoV2ForCausalLM", "MiMoV2FlashForCausalLM")
-            and envs.SGLANG_ENABLE_CP_V2.get()
+        if cfg.enable_prefill_cp and model_arch in (
+            "MiMoV2ForCausalLM",
+            "MiMoV2FlashForCausalLM",
         ):
             if cfg.cp_strategy != "zigzag":
-                raise ValueError("MiMo V2 CP-v2 only supports --cp-strategy zigzag.")
+                raise ValueError(
+                    "MiMo V2 prefill CP only supports --cp-strategy zigzag."
+                )
             if (
                 model_config.is_multimodal
                 and not cfg.language_only
                 and not cfg.language_model_only
             ):
                 raise ValueError(
-                    "MiMo V2 CP-v2 only supports text inference; add "
+                    "MiMo V2 prefill CP only supports text inference; add "
                     "--language-only."
                 )
 
@@ -559,8 +548,24 @@ def handle_eplb_and_dispatch(server_args: Any):
         assert resolved_view(server_args).ep_size > 1
 
 
-def handle_legacy_cp_arguments(server_args: Any):
+def handle_platform_cp_compatibility(server_args: Any):
     cfg = resolving_view(server_args)
+    # Keep the legacy runtime fields only for the protected HIP/NPU
+    # implementations. Generic CUDA/MUSA paths use enable_prefill_cp and
+    # cp_strategy directly.
+    platform = get_platform()
+    if not (platform.is_hip or platform.is_npu):
+        if (
+            cfg.enable_prefill_context_parallel
+            or cfg.enable_dsa_prefill_context_parallel
+        ):
+            raise ValueError(
+                "Legacy prefill context-parallel options are supported only "
+                "by protected HIP or Ascend NPU paths. Use "
+                "--enable-prefill-cp with --cp-strategy."
+            )
+        return
+
     legacy_mode_to_strategy = {
         "in-seq-split": "zigzag",
         "round-robin-split": "interleave",
@@ -573,20 +578,20 @@ def handle_legacy_cp_arguments(server_args: Any):
     if cfg.enable_prefill_context_parallel or cfg.enable_dsa_prefill_context_parallel:
         declare_resolution(
             server_args,
-            "_handle_legacy_cp_arguments",
+            "_handle_platform_cp_compatibility",
             enable_prefill_cp=True,
         )
 
     if cfg.enable_prefill_context_parallel and cfg.cp_strategy is None:
         declare_resolution(
             server_args,
-            "_handle_legacy_cp_arguments",
+            "_handle_platform_cp_compatibility",
             cp_strategy=legacy_mode_to_strategy[cfg.prefill_cp_mode],
         )
     if cfg.enable_dsa_prefill_context_parallel and cfg.cp_strategy is None:
         declare_resolution(
             server_args,
-            "_handle_legacy_cp_arguments",
+            "_handle_platform_cp_compatibility",
             cp_strategy=legacy_mode_to_strategy[cfg.dsa_prefill_cp_mode],
         )
 
@@ -603,28 +608,28 @@ def handle_legacy_cp_arguments(server_args: Any):
     if use_dsa_legacy_aliases:
         declare_resolution(
             server_args,
-            "_handle_legacy_cp_arguments",
+            "_handle_platform_cp_compatibility",
             enable_dsa_prefill_context_parallel=True,
         )
         declare_resolution(
             server_args,
-            "_handle_legacy_cp_arguments",
+            "_handle_platform_cp_compatibility",
             enable_prefill_context_parallel=False,
         )
     else:
         declare_resolution(
             server_args,
-            "_handle_legacy_cp_arguments",
+            "_handle_platform_cp_compatibility",
             enable_prefill_context_parallel=True,
         )
     declare_resolution(
         server_args,
-        "_handle_legacy_cp_arguments",
+        "_handle_platform_cp_compatibility",
         dsa_prefill_cp_mode=mode,
     )
     declare_resolution(
         server_args,
-        "_handle_legacy_cp_arguments",
+        "_handle_platform_cp_compatibility",
         prefill_cp_mode=mode,
     )
 
